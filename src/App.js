@@ -7,6 +7,7 @@ import TrackPreview from './components/TrackPreview';
 import ArtistInfo from './components/ArtistInfo';
 import ProgressBar from './components/ProgressBar';
 import Terminal from './components/Terminal';
+import { BannerAd } from './components/ads';
 
 function App() {
   const [url, setUrl] = useState('');
@@ -98,14 +99,17 @@ function App() {
         era: '1960s - Present',
         image: 'https://i.scdn.co/image/ab67616d0000b273dc30583ba717007b00cceb25',
         imageSource: 'Spotify',
-        popularity: 86,
         followers: 30394768,
-        topTracks: ['Hey Jude', 'Let It Be', 'Yesterday', 'Come Together', 'Here Comes the Sun'],
-        relatedArtists: ['The Rolling Stones', 'Pink Floyd', 'Led Zeppelin', 'Queen', 'The Who'],
-        country: 'United Kingdom',
-        realName: artistName,
-        aliases: ['The Fab Four'],
-        source: 'Music Database APIs'
+        monthlyListeners: 45000000,
+        topTracks: [
+          'Hey Jude',
+          'Let It Be',
+          'Yesterday',
+          'Come Together',
+          'Here Comes the Sun'
+        ],
+        source: 'Music Database API',
+        lastUpdated: new Date().toISOString()
       };
 
       // Simulate API delay
@@ -119,96 +123,69 @@ function App() {
   };
 
   const handleDownload = async () => {
-    if (!trackInfo) {
-      alert('Please select a track first');
-      return;
-    }
-    
-    if (!url || !selectedFormat) {
-      alert('Please provide a Spotify URL and select a format');
-      return;
-    }
+    if (!trackInfo) return;
     
     setIsDownloading(true);
     setDownloadProgress(0);
     
     try {
-      // Create a mock audio file for demonstration
-      // In a real app, this would be the actual downloaded audio file
-      const audioBlob = await createMockAudioFile(trackInfo, selectedFormat);
-      
       // Simulate download progress
-      let progress = 0;
       const progressInterval = setInterval(() => {
-        progress += 5;
-        if (progress <= 90) {
-          setDownloadProgress(progress);
-        }
-      }, 100);
+        setDownloadProgress(prev => {
+          if (prev >= 90) {
+            clearInterval(progressInterval);
+            return 90;
+          }
+          return prev + Math.random() * 15;
+        });
+      }, 200);
       
-      // Create download link
-      const downloadUrl = URL.createObjectURL(audioBlob);
-      const downloadLink = document.createElement('a');
-      downloadLink.href = downloadUrl;
-      downloadLink.download = `${trackInfo.artist} - ${trackInfo.title}.${getFileExtension(selectedFormat)}`;
-      
-      // Trigger download
-      document.body.appendChild(downloadLink);
-      downloadLink.click();
-      document.body.removeChild(downloadLink);
-      
-      // Clean up
-      URL.revokeObjectURL(downloadUrl);
-      clearInterval(progressInterval);
-      
-      // Show completion
-      setDownloadProgress(100);
+      // Simulate download completion
       setTimeout(() => {
+        setDownloadProgress(100);
         setIsDownloading(false);
-        setDownloadProgress(0);
-      }, 2000);
-      
-      // Add log entry
-      setLogs(prev => [...prev, {
-        type: 'success',
-        message: `Successfully downloaded "${trackInfo.title}" in ${selectedFormat} format`,
-        timestamp: new Date().toISOString()
-      }]);
+        
+        // Create a mock download
+        const blob = createMockDownload();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${trackInfo.title}.${getFileExtension(selectedFormat)}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        // Add success log
+        setLogs(prev => [...prev, {
+          type: 'success',
+          message: `Download completed: ${trackInfo.title}.${getFileExtension(selectedFormat)}`,
+          timestamp: new Date().toISOString()
+        }]);
+      }, 3000);
       
     } catch (error) {
       console.error('Download error:', error);
       setIsDownloading(false);
-      setDownloadProgress(0);
-      alert(`Download failed: ${error.message}`);
-      
-      // Add error log
       setLogs(prev => [...prev, {
         type: 'error',
-        message: `Download failed for "${trackInfo.title}": ${error.message}`,
+        message: `Download failed: ${error.message}`,
         timestamp: new Date().toISOString()
       }]);
     }
   };
-  
-  // Helper function to create a mock audio file
-  const createMockAudioFile = async (trackInfo, format) => {
-    // Create a simple audio file with track information
-    const audioData = `This is a mock audio file for "${trackInfo.title}" by ${trackInfo.artist}
-Format: ${format}
-Duration: ${trackInfo.duration}
-Album: ${trackInfo.album}
-Release Date: ${trackInfo.releaseDate}
 
-In a real application, this would be the actual audio file downloaded from Spotify.
-This is just a demonstration of the download functionality.`;
-    
-    // Convert to blob
-    const blob = new Blob([audioData], { type: 'text/plain' });
+  const createMockDownload = async () => {
+    // Create a mock audio file blob
+    const mockAudioData = new Uint8Array(1024 * 1024); // 1MB mock file
+    for (let i = 0; i < mockAudioData.length; i++) {
+      mockAudioData[i] = Math.floor(Math.random() * 256);
+    }
     
     // Simulate processing time
     await new Promise(resolve => setTimeout(resolve, 2000));
     
-    return blob;
+    return new Blob([mockAudioData], { type: 'audio/mpeg' });
   };
   
   // Helper function to get file extension
@@ -232,6 +209,9 @@ This is just a demonstration of the download functionality.`;
         {/* Header */}
         <Header />
         
+        {/* Top Banner Ad */}
+        <BannerAd adSlot="1234567890" className="mt-8" />
+        
         {/* Main Content */}
         <div className="mt-8 sm:mt-12 space-y-8 sm:space-y-12">
           {/* Input and Format Row */}
@@ -245,6 +225,9 @@ This is just a demonstration of the download functionality.`;
               onFormatChange={setSelectedFormat}
             />
           </div>
+          
+          {/* Middle Banner Ad */}
+          <BannerAd adSlot="0987654321" />
           
           {/* Track Preview and Artist Info Row */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8 mt-12 sm:mt-16">
@@ -278,6 +261,9 @@ This is just a demonstration of the download functionality.`;
           {isDownloading && (
             <ProgressBar progress={downloadProgress} />
           )}
+          
+          {/* Bottom Banner Ad */}
+          <BannerAd adSlot="1122334455" />
           
           {/* Terminal Section */}
           <div className="mt-16 pt-8 border-t border-loader-green-medium">

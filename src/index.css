@@ -278,4 +278,39 @@
     transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
     transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
   }
+  
+  /* AdSense Styles */
+  .ad-container {
+    @apply my-6 sm:my-8 text-center;
+    min-height: 90px;
+  }
+  
+  .sidebar-ad {
+    @apply my-4 sm:my-6 text-center;
+    min-height: 600px;
+  }
+  
+  /* Responsive ad sizing */
+  @media (max-width: 640px) {
+    .ad-container {
+      @apply my-4;
+      min-height: 50px;
+    }
+    
+    .sidebar-ad {
+      @apply my-3;
+      min-height: 250px;
+    }
+  }
+  
+  /* Ad loading states */
+  .ad-container:empty::before {
+    content: '';
+    @apply block w-full h-20 bg-dark-card border border-loader-green-medium rounded-xl animate-pulse;
+  }
+  
+  .sidebar-ad:empty::before {
+    content: '';
+    @apply block w-full h-96 bg-dark-card border border-loader-green-medium rounded-xl animate-pulse;
+  }
 }
