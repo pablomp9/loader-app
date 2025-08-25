@@ -1,0 +1,536 @@
+const { app, BrowserWindow, ipcMain, dialog } = require('electron')
+const path = require('path')
+const fs = require('fs')
+const { spawn } = require('child_process')
+const https = require('https')
+
+// Spotify API credentials
+const SPOTIFY_CLIENT_ID = '0a82e6bc2ddb47c5b233a58f8b8d887a'
+const SPOTIFY_CLIENT_SECRET = 'c58a3057e7e14d679307bbfd5a653f29'
+
+// API credentials for enhanced artist information
+const OPENAI_API_KEY = 'your-openai-api-key-here' // Replace with your actual OpenAI API key
+const DISCOGS_API_KEY = 'your-discogs-api-key-here' // Replace with your actual Discogs API key
+const DISCOGS_API_SECRET = 'your-discogs-api-secret-here' // Replace with your actual Discogs API secret
+
+let accessToken = null
+let tokenExpiry = 0
+
+// Helper function to make HTTPS requests
+function makeHttpsRequest(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, options, (res) => {
+      let data = ''
+      
+      res.on('data', (chunk) => {
+        data += chunk
+      })
+      
+      res.on('end', () => {
+        try {
+          const jsonData = JSON.parse(data)
+          resolve({ status: res.statusCode, data: jsonData })
+        } catch (error) {
+          reject(new Error(`Failed to parse response: ${error.message}`))
+        }
+      })
+    })
+    
+    req.on('error', (error) => {
+      reject(error)
+    })
+    
+    if (options.body) {
+      req.write(options.body)
+    }
+    
+    req.end()
+  })
+}
+
+// Function to get Spotify access token
+async function getSpotifyToken() {
+  if (accessToken && Date.now() < tokenExpiry) {
+    return accessToken
+  }
+  
+  try {
+    const body = 'grant_type=client_credentials'
+    const auth = Buffer.from(SPOTIFY_CLIENT_ID + ':' + SPOTIFY_CLIENT_SECRET).toString('base64')
+    
+    const response = await makeHttpsRequest('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': 'Basic ' + auth,
+        'Content-Length': Buffer.byteLength(body)
+      },
+      body: body
+    })
+    
+    if (response.status === 200) {
+      accessToken = response.data.access_token
+      tokenExpiry = Date.now() + (response.data.expires_in * 1000) - 60000 // Refresh 1 minute early
+      return accessToken
+    } else {
+      throw new Error(`Spotify token request failed: ${response.status}`)
+    }
+  } catch (error) {
+    console.error('Failed to get Spotify token:', error)
+    return null
+  }
+}
+
+// Function to get track metadata from Spotify API
+async function getSpotifyTrackMetadata(trackId) {
+  try {
+    const token = await getSpotifyToken()
+    if (!token) {
+      throw new Error('Failed to get Spotify access token')
+    }
+    
+    const response = await makeHttpsRequest(`https://api.spotify.com/v1/tracks/${trackId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    
+    if (response.status !== 200) {
+      throw new Error(`Spotify API error: ${response.status}`)
+    }
+    
+    const track = response.data
+    
+    return {
+      success: true,
+      title: track.name,
+      artist: track.artists.map(a => a.name).join(', '),
+      album: track.album.name,
+      duration: formatDuration(track.duration_ms),
+      artwork: track.album.images[0]?.url || '',
+      releaseDate: track.album.release_date,
+      trackNumber: track.track_number,
+      totalTracks: track.album.total_tracks,
+      spotifyId: track.id,
+      externalUrl: track.external_urls?.spotify || ''
+    }
+  } catch (error) {
+    console.error('Failed to get Spotify track metadata:', error)
+    return { success: false, error: error.message }
+  }
+}
+
+// Function to format duration from milliseconds
+function formatDuration(ms) {
+  const seconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
+}
+
+// Function to get artist information from Discogs API
+async function getDiscogsArtistInfo(artistName) {
+  try {
+    const encodedArtist = encodeURIComponent(artistName)
+    const url = `https://api.discogs.com/database/search?q=${encodedArtist}&type=artist&key=${DISCOGS_API_KEY}&secret=${DISCOGS_API_SECRET}`
+    
+    const response = await makeHttpsRequest(url, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'LoaderApp/1.0'
+      }
+    })
+    
+    if (response.status === 200 && response.data.results && response.data.results.length > 0) {
+      const artist = response.data.results[0]
+      
+      // Get detailed artist info
+      const artistUrl = artist.resource_url
+      const artistResponse = await makeHttpsRequest(artistUrl, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'LoaderApp/1.0'
+        }
+      })
+      
+      if (artistResponse.status === 200) {
+        const artistData = artistResponse.data
+        return {
+          success: true,
+          bio: artistData.profile || 'No biography available',
+          genre: artistData.genres?.[0] || 'Various Genres',
+          era: artistData.years_active?.[0] || 'Active',
+          image: artistData.images?.[0]?.uri || null,
+          country: artistData.country || 'Unknown',
+          realName: artistData.realname || artistName,
+          aliases: artistData.aliases || [],
+          members: artistData.members || []
+        }
+      }
+    }
+    
+    return { success: false, error: 'Artist not found on Discogs' }
+  } catch (error) {
+    console.error('Failed to get Discogs artist info:', error)
+    return { success: false, error: error.message }
+  }
+}
+
+// Function to get enhanced artist information using ChatGPT API
+async function getChatGPTArtistInfo(artistName, trackName, albumName, releaseYear) {
+  try {
+    const prompt = `Write a compelling, informative biography about the music artist "${artistName}" in 2-3 paragraphs. Focus on their musical style, influences, career highlights, and cultural impact. Also provide context about their song "${trackName}" from the album "${albumName}" (released ${releaseYear}). Make it engaging and educational for music lovers. Keep it under 300 words total.`
+    
+    const response = await makeHttpsRequest('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a knowledgeable music historian and critic who writes engaging, accurate biographies about musicians and their work.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        max_tokens: 400,
+        temperature: 0.7
+      })
+    })
+    
+    if (response.status === 200 && response.data.choices && response.data.choices.length > 0) {
+      const content = response.data.choices[0].message.content
+      return {
+        success: true,
+        bio: content,
+        source: 'ChatGPT AI'
+      }
+    } else {
+      return { success: false, error: 'Failed to generate AI content' }
+    }
+  } catch (error) {
+    console.error('Failed to get ChatGPT artist info:', error)
+    return { success: false, error: error.message }
+  }
+}
+
+// Function to get enhanced Spotify artist information
+async function getEnhancedSpotifyArtistInfo(artistId) {
+  try {
+    const token = await getSpotifyToken()
+    if (!token) {
+      throw new Error('Failed to get Spotify access token')
+    }
+    
+    // Get artist details
+    const artistResponse = await makeHttpsRequest(`https://api.spotify.com/v1/artists/${artistId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    
+    if (artistResponse.status === 200) {
+      const artist = artistResponse.data
+      
+      // Get artist's top tracks
+      const tracksResponse = await makeHttpsRequest(`https://api.spotify.com/v1/artists/${artistId}/top-tracks?market=US`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      
+      // Get related artists
+      const relatedResponse = await makeHttpsRequest(`https://api.spotify.com/v1/artists/${artistId}/related-artists`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      
+      return {
+        success: true,
+        popularity: artist.popularity || 0,
+        followers: artist.followers?.total || 0,
+        genres: artist.genres || [],
+        images: artist.images || [],
+        topTracks: tracksResponse.status === 200 ? tracksResponse.data.tracks?.slice(0, 5) || [] : [],
+        relatedArtists: relatedResponse.status === 200 ? relatedResponse.data.artists?.slice(0, 5) || [] : []
+      }
+    }
+    
+    return { success: false, error: 'Failed to get enhanced Spotify data' }
+  } catch (error) {
+    console.error('Failed to get enhanced Spotify artist info:', error)
+    return { success: false, error: error.message }
+  }
+}
+
+let mainWindow
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false
+    },
+    icon: path.join(__dirname, 'icon.png'),
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: '#1a1a1a'
+  })
+
+  mainWindow.loadFile('index.html')
+  
+  // Open DevTools in development
+  if (process.env.NODE_ENV === 'development') {
+    mainWindow.webContents.openDevTools()
+  }
+}
+
+app.whenReady().then(createWindow)
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit()
+  }
+})
+
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow()
+  }
+})
+
+// Get default download folder
+function getDefaultDownloadFolder() {
+  return path.join(require('os').homedir(), 'Downloads')
+}
+
+// Handle metadata requests
+ipcMain.handle('get-metadata', async (event, url) => {
+  try {
+    // Extract Spotify track ID from URL
+    const spotifyId = extractSpotifyId(url)
+    if (!spotifyId) {
+      return { success: false, error: 'Invalid Spotify URL' }
+    }
+
+    console.log('Getting metadata for Spotify track:', spotifyId)
+    
+    // Get real metadata from Spotify API
+    const metadata = await getSpotifyTrackMetadata(spotifyId)
+    
+    if (metadata.success) {
+      console.log('Successfully got Spotify metadata:', metadata)
+      
+      // Get additional artist information from multiple APIs
+      try {
+        // Extract artist ID from Spotify metadata
+        const artistId = metadata.artists?.[0]?.id || null
+        
+        const [discogsInfo, chatgptInfo, enhancedSpotifyInfo] = await Promise.allSettled([
+          getDiscogsArtistInfo(metadata.artist),
+          getChatGPTArtistInfo(metadata.artist, metadata.title, metadata.album, metadata.releaseDate),
+          artistId ? getEnhancedSpotifyArtistInfo(artistId) : Promise.resolve({ success: false })
+        ])
+        
+        // Combine all the data
+        const enrichedMetadata = {
+          ...metadata,
+          discogsArtist: discogsInfo.status === 'fulfilled' && discogsInfo.value.success ? discogsInfo.value : null,
+          chatgptArtist: chatgptInfo.status === 'fulfilled' && chatgptInfo.value.success ? chatgptInfo.value : null,
+          enhancedSpotify: enhancedSpotifyInfo.status === 'fulfilled' && enhancedSpotifyInfo.value.success ? enhancedSpotifyInfo.value : null
+        }
+        
+        console.log('Successfully enriched metadata with multiple API data')
+        return enrichedMetadata
+      } catch (apiError) {
+        console.warn('Some APIs failed, returning Spotify data only:', apiError)
+        return metadata
+      }
+    } else {
+      console.error('Failed to get Spotify metadata:', metadata.error)
+      // Return fallback metadata
+      return {
+        success: true,
+        title: 'Track Preview',
+        artist: 'Information will appear during download',
+        album: 'Album details loading...',
+        duration: 'Duration unknown',
+        artwork: 'https://via.placeholder.com/300x300/1DB954/FFFFFF?text=♪',
+        releaseDate: '2024-01-01',
+        trackNumber: 1,
+        totalTracks: 10,
+        spotifyId: spotifyId,
+        externalUrl: url
+      }
+    }
+  } catch (error) {
+    console.error('Error getting metadata:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+// Handle downloads
+ipcMain.handle('download', async (event, { url, format, outputFolder }) => {
+  try {
+    // Use default folder if none specified
+    const downloadFolder = outputFolder || getDefaultDownloadFolder()
+    
+    console.log('Starting download with format:', format)
+    
+    // Extract Spotify track ID and get metadata
+    const spotifyId = extractSpotifyId(url)
+    if (!spotifyId) {
+      throw new Error('Invalid Spotify URL')
+    }
+
+    // Get metadata first
+    const metadata = await getSpotifyMetadata(spotifyId)
+    if (!metadata.success) {
+      throw new Error('Failed to get track metadata')
+    }
+
+    // Send metadata to frontend
+    mainWindow.webContents.send('metadata-update', metadata)
+
+    // Prepare yt-dlp arguments
+    const ytdlpArgs = [
+      '--output', path.join(downloadFolder, '%(title)s.%(ext)s'),
+      '--no-playlist',
+      '--force-overwrites',
+      '--no-warnings'
+    ]
+
+    // Add format-specific arguments
+    switch (format) {
+      case 'mp3-good':
+        ytdlpArgs.push('--extract-audio', '--audio-format', 'mp3', '--audio-quality', '128K')
+        break
+      case 'mp3-better':
+        ytdlpArgs.push('--extract-audio', '--audio-format', 'mp3', '--audio-quality', '320K')
+        break
+      case 'wav-great':
+        ytdlpArgs.push('--extract-audio', '--audio-format', 'wav')
+        // For higher quality WAV, use 48kHz sample rate with 16-bit (more compatible)
+        // This gives better quality than standard 44.1kHz while avoiding conversion errors
+        // Using -f wav to ensure proper WAV format output
+        ytdlpArgs.push('--postprocessor-args', 'ffmpeg:-ar 48000 -ac 2 -f wav')
+        break
+      case 'flac-lossless':
+        ytdlpArgs.push('--extract-audio', '--audio-format', 'flac')
+        break
+      default:
+        ytdlpArgs.push('--extract-audio', '--audio-format', 'mp3', '--audio-quality', '320K')
+    }
+
+    // Add search query
+    const searchQuery = `${metadata.artist} - ${metadata.title}`
+    ytdlpArgs.push('ytsearch1:' + searchQuery)
+
+    console.log('yt-dlp args:', ytdlpArgs)
+
+    // Start download process
+    const downloadProcess = spawn('yt-dlp', ytdlpArgs, {
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+
+    let output_log = ''
+    let extractedMetadata = {
+      title: 'Loading...',
+      artist: 'Loading...',
+      album: 'Loading...',
+      duration: 'Loading...'
+    }
+
+    // Handle stdout
+    downloadProcess.stdout.on('data', (data) => {
+      const output = data.toString()
+      output_log += output
+      
+      // Send log updates to frontend
+      mainWindow.webContents.send('log-update', output)
+      
+      // Extract metadata from output if available
+      if (metadata.success && metadata.title !== 'Loading...') {
+        // Only update if we have real metadata
+        if (metadata.title && metadata.title !== 'Loading...') {
+          mainWindow.webContents.send('metadata-update', metadata)
+        }
+      }
+    })
+
+    // Handle stderr
+    downloadProcess.stderr.on('data', (data) => {
+      const output = data.toString()
+      output_log += output
+      
+      // Send log updates to frontend
+      mainWindow.webContents.send('log-update', output)
+      
+      // Extract metadata from output if available
+      if (metadata.success && metadata.title !== 'Loading...') {
+        // Only update if we have real metadata
+        if (metadata.title && metadata.title !== 'Loading...') {
+          mainWindow.webContents.send('metadata-update', metadata)
+        }
+      }
+    })
+
+    // Handle process completion
+    downloadProcess.on('close', (code) => {
+      console.log('Download process closed with code:', code)
+      console.log('Full output log:', output_log)
+
+      // Check for specific errors
+      let errorMessage = null
+      if (output_log.includes('ERROR: Postprocessing: audio conversion failed')) {
+        errorMessage = 'Audio conversion failed - this may be due to unsupported audio format or FFmpeg configuration. Try a different format like MP3.'
+      } else if (output_log.includes('ERROR:')) {
+        errorMessage = 'Download failed - check the terminal for details.'
+      }
+
+      if (code === 0 && !errorMessage) {
+        console.log('Success flag: true')
+        mainWindow.webContents.send('download-complete', { success: true })
+      } else {
+        console.log('Success flag: false')
+        const finalError = errorMessage || 'Download failed with unknown error'
+        mainWindow.webContents.send('download-error', finalError)
+      }
+    })
+
+    return { success: true, message: 'Download started' }
+
+  } catch (error) {
+    console.error('Download error:', error)
+    return { success: false, error: error.message }
+  }
+})
+
+// Extract Spotify track ID from URL
+function extractSpotifyId(url) {
+  const match = url.match(/spotify\.com\/track\/([a-zA-Z0-9]+)/)
+  return match ? match[1] : null
+}
+
+// Get Spotify metadata (using real API)
+async function getSpotifyMetadata(spotifyId) {
+  try {
+    // Use the real Spotify API function
+    return await getSpotifyTrackMetadata(spotifyId)
+  } catch (error) {
+    console.error('Error getting Spotify metadata:', error)
+    return { success: false, error: error.message }
+  }
+}

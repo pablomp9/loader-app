@@ -1,0 +1,15 @@
+{
+  "short_name": "Loader",
+  "name": "Loader - Music Downloader",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#1DB954",
+  "background_color": "#0a0a0a"
+}
