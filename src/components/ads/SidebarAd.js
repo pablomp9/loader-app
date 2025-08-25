@@ -17,7 +17,7 @@ const SidebarAd = ({ adSlot, className = '' }) => {
       <ins
         className="adsbygoogle"
         style={{ display: 'block' }}
-        data-ad-client="ca-pub-YOUR_PUBLISHER_ID"
+        data-ad-client="ca-pub-488264623350466"
         data-ad-slot={adSlot}
         data-ad-format="vertical"
         data-full-width-responsive="false"
