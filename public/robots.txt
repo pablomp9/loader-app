@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+
+# AdSense Verification
+Allow: /ads.txt
+Allow: /adsense-verification.html
+
+# Sitemap
+Sitemap: https://spotify-loader-alpha.vercel.app/sitemap.xml
